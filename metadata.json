@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Terraform Plan Visualizer",
+  "description": "A developer tool to visualize, parse, and compare Terraform plan outputs. It specifically targets Network Security Group (NSG) rule changes, highlighting modifications, additions, and deletions in a readable dashboard.",
+  "requestFramePermissions": []
+}
