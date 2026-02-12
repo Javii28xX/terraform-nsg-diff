@@ -1,5 +1,5 @@
 export interface NSGRule {
-  id?: string; // Generated ID for internal tracking
+  id?: string;
   name: string;
   priority: number;
   direction: string;
@@ -28,10 +28,37 @@ export enum DiffType {
 export interface DiffResult {
   type: DiffType;
   rule: NSGRule;
-  previousRule?: NSGRule; // For modifications
+  previousRule?: NSGRule;
+}
+
+// --- New Types for Firewall & IP Groups ---
+
+export interface FirewallRuleChange {
+  id: string;
+  changeType: DiffType;
+  ruleCollectionGroupName?: string; // e.g. "customer"
+  ruleCollectionName: string;
+  ruleCollectionPriority?: number | string;
+  ruleName: string;
+  priority?: string; // Can be string because of "100 -> 200"
+  action?: string; // Allow/Deny
+  details: Record<string, { old?: any; new?: any; value?: any }>;
+}
+
+export interface IPGroupChange {
+  id: string;
+  name: string;
+  changeType: DiffType;
+  cidrs: {
+    added: string[];
+    removed: string[];
+    current: string[];
+  };
 }
 
 export interface ParseResult {
-  added: NSGRule[];
-  removed: NSGRule[];
+  nsgAdded: NSGRule[];
+  nsgRemoved: NSGRule[];
+  firewallChanges: FirewallRuleChange[];
+  ipGroupChanges: IPGroupChange[];
 }

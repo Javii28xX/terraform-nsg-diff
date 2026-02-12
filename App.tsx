@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { parseTerraformLog } from './services/parser';
 import { calculateDiff } from './services/diffEngine';
-import { DiffResult, DiffType } from './types';
+import { DiffResult, DiffType, FirewallRuleChange, IPGroupChange } from './types';
 import { ComparisonView } from './components/ComparisonView';
+import { FirewallComparisonView } from './components/FirewallComparisonView';
+import { FirewallFinalView } from './components/FirewallFinalView';
 import { 
   FileText, 
   Search, 
@@ -16,29 +18,33 @@ import {
   ShieldAlert,
   Moon,
   Sun,
-  Info
+  Info,
+  Flame,
+  Network
 } from 'lucide-react';
 
 function App() {
   const [logInput, setLogInput] = useState('');
-  // Default to 'input' tab as requested
   const [activeTab, setActiveTab] = useState<'dashboard' | 'input'>('input');
+  
+  // Dashboard Sub-tabs
+  const [dashboardTab, setDashboardTab] = useState<'nsg' | 'fw' | 'ip'>('nsg');
+
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<DiffType | 'ALL'>('ALL');
   const [selectedModification, setSelectedModification] = useState<DiffResult | null>(null);
+  const [selectedFirewallChange, setSelectedFirewallChange] = useState<FirewallRuleChange | null>(null);
   
-  // Theme State - Default to Dark Mode
+  // Theme State
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('theme');
       if (saved) return saved === 'dark';
-      // Default to true (Dark mode) if no preference is saved
       return true;
     }
     return true;
   });
 
-  // Theme Effect
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -49,32 +55,61 @@ function App() {
     }
   }, [isDarkMode]);
 
-  const diffResults = useMemo(() => {
-    const { added, removed } = parseTerraformLog(logInput);
-    return calculateDiff(added, removed);
+  // Parsing
+  const { nsgDiffs, fwDiffs, ipDiffs } = useMemo(() => {
+    const { nsgAdded, nsgRemoved, firewallChanges, ipGroupChanges } = parseTerraformLog(logInput);
+    return {
+      nsgDiffs: calculateDiff(nsgAdded, nsgRemoved),
+      fwDiffs: firewallChanges,
+      ipDiffs: ipGroupChanges
+    };
   }, [logInput]);
 
+  // Stats
   const stats = useMemo(() => {
+    const currentList = dashboardTab === 'nsg' ? nsgDiffs 
+                      : dashboardTab === 'fw' ? fwDiffs 
+                      : ipDiffs;
+    
+    // Normalize types for stats counting
+    const getChangeType = (item: any) => item.type || item.changeType;
+
     return {
-      total: diffResults.length,
-      added: diffResults.filter(r => r.type === DiffType.ADDED).length,
-      removed: diffResults.filter(r => r.type === DiffType.REMOVED).length,
-      modified: diffResults.filter(r => r.type === DiffType.MODIFIED).length,
+      total: currentList.length,
+      added: currentList.filter(r => getChangeType(r) === DiffType.ADDED).length,
+      removed: currentList.filter(r => getChangeType(r) === DiffType.REMOVED).length,
+      modified: currentList.filter(r => getChangeType(r) === DiffType.MODIFIED).length,
     };
-  }, [diffResults]);
+  }, [nsgDiffs, fwDiffs, ipDiffs, dashboardTab]);
 
+  // Filtering
   const filteredResults = useMemo(() => {
-    return diffResults.filter(result => {
-      const matchesSearch = 
-        result.rule.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        result.rule.description?.toLowerCase().includes(searchTerm.toLowerCase());
-      
-      const matchesFilter = filterType === 'ALL' || result.type === filterType;
+    if (dashboardTab === 'nsg') {
+      return nsgDiffs.filter(result => {
+        const matchesSearch = 
+          result.rule.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          result.rule.description?.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesFilter = filterType === 'ALL' || result.type === filterType;
+        return matchesSearch && matchesFilter;
+      });
+    } else if (dashboardTab === 'fw') {
+      return fwDiffs.filter(result => {
+        const matchesSearch = 
+          result.ruleName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          result.ruleCollectionName.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesFilter = filterType === 'ALL' || result.changeType === filterType;
+        return matchesSearch && matchesFilter;
+      });
+    } else {
+      return ipDiffs.filter(result => {
+        const matchesSearch = result.name.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesFilter = filterType === 'ALL' || result.changeType === filterType;
+        return matchesSearch && matchesFilter;
+      });
+    }
+  }, [nsgDiffs, fwDiffs, ipDiffs, searchTerm, filterType, dashboardTab]);
 
-      return matchesSearch && matchesFilter;
-    });
-  }, [diffResults, searchTerm, filterType]);
-
+  // Helpers
   const getRowStyle = (type: DiffType) => {
     switch (type) {
       case DiffType.ADDED: 
@@ -97,9 +132,30 @@ function App() {
     }
   };
 
-  const formatPort = (ranges?: string[]) => {
-    if (!ranges || ranges.length === 0) return '*';
-    return ranges.join(', ');
+  const formatList = (items?: string[]) => {
+    if (!items || items.length === 0) return '*';
+    if (items.length > 2) return `${items.slice(0, 2).join(', ')} +${items.length - 2}`;
+    return items.join(', ');
+  };
+
+  // Helper to render diff value in table cell
+  const DiffCell = ({ data }: { data: { old?: any, new?: any, value?: any } | undefined }) => {
+    if (!data) return <span className="text-gray-400">-</span>;
+    if (data.value !== undefined) return <span>{String(data.value)}</span>;
+    
+    // It's a diff
+    if (data.old !== undefined && data.new !== undefined) {
+      // Modification
+      return (
+        <div className="flex flex-col text-xs">
+          <span className="text-red-500 line-through mr-1">{Array.isArray(data.old) ? formatList(data.old) : String(data.old)}</span>
+          <span className="text-green-600 font-bold">{Array.isArray(data.new) ? formatList(data.new) : String(data.new)}</span>
+        </div>
+      );
+    }
+    if (data.new !== undefined) return <span className="text-green-600">{Array.isArray(data.new) ? formatList(data.new) : String(data.new)}</span>;
+    if (data.old !== undefined) return <span className="text-red-500 line-through">{Array.isArray(data.old) ? formatList(data.old) : String(data.old)}</span>;
+    return <span>-</span>;
   };
 
   return (
@@ -155,14 +211,13 @@ function App() {
       <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         {activeTab === 'input' ? (
           <div className="flex flex-col h-[calc(100vh-10rem)]">
-             {/* How to use section */}
              <div className="bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-500 p-4 mb-6 rounded-r-lg shadow-sm transition-colors duration-200">
                 <h3 className="text-blue-800 dark:text-blue-300 font-bold mb-2 flex items-center gap-2 text-sm uppercase tracking-wide">
                     <Info size={18} /> How to use
                 </h3>
                 <p className="text-blue-700 dark:text-blue-200 text-sm leading-relaxed">
-                    To use this tool, simply go to your Terraform plan output, click on <strong>"View raw log"</strong>,
-                    copy the logs related to the NSG, and paste them into the input area below.
+                    Copy the Terraform plan output (Raw Log) for NSGs, Firewall Policies, or IP Groups and paste it below. 
+                    The tool automatically detects the resource types.
                 </p>
             </div>
 
@@ -172,7 +227,7 @@ function App() {
                 value={logInput}
                 onChange={(e) => setLogInput(e.target.value)}
                 className="flex-1 w-full p-4 font-mono text-sm border dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none text-slate-600 dark:text-slate-300 transition-colors duration-200"
-                placeholder="Paste your terraform plan output here..."
+                placeholder="Paste your terraform plan output here (e.g., resource 'azurerm_network_security_group' ... or 'azurerm_firewall_policy_rule_collection_group' ...)"
               />
               <div className="mt-4 flex justify-end">
                 <button 
@@ -186,6 +241,43 @@ function App() {
           </div>
         ) : (
           <div className="space-y-6">
+            
+            {/* Resource Type Tabs */}
+            <div className="flex justify-center mb-6">
+              <div className="bg-gray-100 dark:bg-slate-800 p-1 rounded-xl inline-flex shadow-inner">
+                <button
+                  onClick={() => { setDashboardTab('nsg'); setFilterType('ALL'); }}
+                  className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                    dashboardTab === 'nsg'
+                      ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+                  }`}
+                >
+                  <ShieldAlert size={16} /> NSG Rules {nsgDiffs.length > 0 && <span className="ml-1 px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-900 text-xs">{nsgDiffs.length}</span>}
+                </button>
+                <button
+                  onClick={() => { setDashboardTab('fw'); setFilterType('ALL'); }}
+                  className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                    dashboardTab === 'fw'
+                      ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+                  }`}
+                >
+                  <Flame size={16} /> Firewall Policies {fwDiffs.length > 0 && <span className="ml-1 px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-900 text-xs">{fwDiffs.length}</span>}
+                </button>
+                <button
+                  onClick={() => { setDashboardTab('ip'); setFilterType('ALL'); }}
+                  className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                    dashboardTab === 'ip'
+                      ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+                  }`}
+                >
+                  <Network size={16} /> IP Groups {ipDiffs.length > 0 && <span className="ml-1 px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-900 text-xs">{ipDiffs.length}</span>}
+                </button>
+              </div>
+            </div>
+
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="bg-white dark:bg-slate-900 p-5 rounded-xl shadow-sm border dark:border-slate-800 flex items-center justify-between transition-colors duration-200">
@@ -271,83 +363,156 @@ function App() {
             {/* Table */}
             <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border dark:border-slate-800 overflow-hidden transition-colors duration-200">
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-800">
+                {dashboardTab === 'nsg' && (
+                  <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-800">
+                    <thead className="bg-gray-50 dark:bg-slate-800/50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Status</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Priority</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Access</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Direction</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Dest Port</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                      {(filteredResults as DiffResult[]).length === 0 ? (
+                        <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">No NSG changes found.</td></tr>
+                      ) : (
+                        (filteredResults as DiffResult[]).map((result, idx) => (
+                          <tr key={`${result.rule.name}-${idx}`} 
+                            className={`transition-colors cursor-pointer ${getRowStyle(result.type)}`}
+                            onClick={() => result.type === DiffType.MODIFIED && setSelectedModification(result)}
+                          >
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getBadgeStyle(result.type)}`}>{result.type}</span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200 font-mono">
+                                {result.rule.priority}
+                                {result.type === DiffType.MODIFIED && result.previousRule?.priority !== result.rule.priority && (
+                                  <span className="text-xs text-red-500 ml-2 line-through">{result.previousRule?.priority}</span>
+                                )}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                                {result.rule.name}
+                                {result.type === DiffType.MODIFIED && <span className="ml-2 text-xs text-blue-600 hover:underline">Compare →</span>}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{result.rule.access}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{result.rule.direction}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">{formatList(result.rule.destination_port_ranges)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                )}
+
+                {dashboardTab === 'fw' && (
+                  <>
+                   <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-800">
+                   <thead className="bg-gray-50 dark:bg-slate-800/50">
+                     <tr>
+                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Status</th>
+                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Collection</th>
+                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Rule Name</th>
+                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Source</th>
+                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Destination</th>
+                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Dest Port</th>
+                     </tr>
+                   </thead>
+                   <tbody className="divide-y divide-gray-200 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                     {(filteredResults as FirewallRuleChange[]).length === 0 ? (
+                       <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">No Firewall changes found.</td></tr>
+                     ) : (
+                       (filteredResults as FirewallRuleChange[]).map((result) => (
+                         <tr 
+                          key={result.id} 
+                          className={`transition-colors ${result.changeType === DiffType.MODIFIED ? 'cursor-pointer' : ''} ${getRowStyle(result.changeType)}`}
+                          onClick={() => result.changeType === DiffType.MODIFIED && setSelectedFirewallChange(result)}
+                         >
+                           <td className="px-6 py-4 whitespace-nowrap">
+                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getBadgeStyle(result.changeType)}`}>{result.changeType}</span>
+                           </td>
+                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200 font-mono">{result.ruleCollectionName}</td>
+                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                             {result.ruleName}
+                             {result.changeType === DiffType.MODIFIED && <span className="ml-2 text-xs text-blue-600 hover:underline">Compare →</span>}
+                           </td>
+                           <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 font-mono">
+                             <DiffCell data={result.details.source_addresses || result.details.source_ip_groups} />
+                           </td>
+                           <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 font-mono">
+                             <DiffCell data={result.details.destination_addresses || result.details.destination_fqdns || result.details.destination_ip_groups} />
+                           </td>
+                           <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 font-mono">
+                             <DiffCell data={result.details.destination_ports} />
+                           </td>
+                         </tr>
+                       ))
+                     )}
+                   </tbody>
+                 </table>
+                 <FirewallFinalView changes={fwDiffs} />
+                 </>
+                )}
+
+                {dashboardTab === 'ip' && (
+                  <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-800">
                   <thead className="bg-gray-50 dark:bg-slate-800/50">
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Status</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Priority</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Access</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Direction</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Dest Port</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">IP Group Name</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">CIDRs Added</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">CIDRs Removed</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 dark:divide-slate-800 bg-white dark:bg-slate-900">
-                    {filteredResults.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-10 text-center text-gray-500 dark:text-gray-400">
-                          No changes found matching your criteria.
-                        </td>
-                      </tr>
+                    {(filteredResults as IPGroupChange[]).length === 0 ? (
+                      <tr><td colSpan={4} className="px-6 py-10 text-center text-gray-500">No IP Group changes found.</td></tr>
                     ) : (
-                      filteredResults.map((result, idx) => (
-                        <tr 
-                          key={`${result.rule.name}-${idx}`} 
-                          className={`transition-colors cursor-pointer ${getRowStyle(result.type)}`}
-                          onClick={() => result.type === DiffType.MODIFIED && setSelectedModification(result)}
-                        >
+                      (filteredResults as IPGroupChange[]).map((result) => (
+                        <tr key={result.id} className={`transition-colors ${getRowStyle(result.changeType)}`}>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getBadgeStyle(result.type)}`}>
-                              {result.type === DiffType.ADDED && <PlusCircle size={12} className="mr-1" />}
-                              {result.type === DiffType.REMOVED && <MinusCircle size={12} className="mr-1" />}
-                              {result.type === DiffType.MODIFIED && <Edit3 size={12} className="mr-1" />}
-                              {result.type}
-                            </span>
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getBadgeStyle(result.changeType)}`}>{result.changeType}</span>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-200 font-mono">
-                            {result.rule.priority}
-                            {result.type === DiffType.MODIFIED && result.previousRule?.priority !== result.rule.priority && (
-                              <span className="text-xs text-red-500 dark:text-red-400 ml-2 line-through">{result.previousRule?.priority}</span>
-                            )}
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{result.name}</td>
+                          <td className="px-6 py-4 text-sm font-mono text-green-600 dark:text-green-400 bg-green-50/50 dark:bg-green-900/10">
+                            {result.cidrs.added.length > 0 ? (
+                              <div className="flex flex-col gap-1">
+                                {result.cidrs.added.map(cidr => <span key={cidr}>+ {cidr}</span>)}
+                              </div>
+                            ) : '-'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
-                            {result.rule.name}
-                            {result.type === DiffType.MODIFIED && (
-                              <span className="ml-2 inline-flex items-center text-xs text-blue-600 dark:text-blue-400 hover:underline">
-                                Compare <ArrowRight size={10} className="ml-1" />
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                              result.rule.access === 'Allow' 
-                                ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300' 
-                                : 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
-                            }`}>
-                              {result.rule.access}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                            {result.rule.direction}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">
-                            {formatPort(result.rule.destination_port_ranges)}
+                          <td className="px-6 py-4 text-sm font-mono text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-900/10">
+                             {result.cidrs.removed.length > 0 ? (
+                              <div className="flex flex-col gap-1">
+                                {result.cidrs.removed.map(cidr => <span key={cidr}>- {cidr}</span>)}
+                              </div>
+                            ) : '-'}
                           </td>
                         </tr>
                       ))
                     )}
                   </tbody>
                 </table>
+                )}
               </div>
             </div>
           </div>
         )}
 
-        {selectedModification && selectedModification.previousRule && (
+        {selectedModification && selectedModification.previousRule && dashboardTab === 'nsg' && (
           <ComparisonView 
             oldRule={selectedModification.previousRule}
             newRule={selectedModification.rule}
             onClose={() => setSelectedModification(null)}
+          />
+        )}
+
+        {selectedFirewallChange && dashboardTab === 'fw' && (
+          <FirewallComparisonView 
+            change={selectedFirewallChange}
+            onClose={() => setSelectedFirewallChange(null)}
           />
         )}
       </main>
