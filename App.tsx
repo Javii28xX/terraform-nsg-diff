@@ -11,28 +11,32 @@ import {
   PlusCircle, 
   MinusCircle, 
   Edit3, 
-  ArrowRight, 
+  ArrowRight,
+  ArrowLeft,
   LayoutDashboard,
   ShieldAlert,
   Moon,
-  Sun
+  Sun,
+  Info
 } from 'lucide-react';
 
 function App() {
   const [logInput, setLogInput] = useState(SAMPLE_LOG);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'input'>('dashboard');
+  // Default to 'input' tab as requested
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'input'>('input');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<DiffType | 'ALL'>('ALL');
   const [selectedModification, setSelectedModification] = useState<DiffResult | null>(null);
   
-  // Theme State
+  // Theme State - Default to Dark Mode
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('theme');
       if (saved) return saved === 'dark';
-      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+      // Default to true (Dark mode) if no preference is saved
+      return true;
     }
-    return false;
+    return true;
   });
 
   // Theme Effect
@@ -151,14 +155,35 @@ function App() {
 
       <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         {activeTab === 'input' ? (
-          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border dark:border-slate-800 p-6 h-[calc(100vh-10rem)] flex flex-col transition-colors duration-200">
-            <h2 className="text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200">Paste Terraform Output</h2>
-            <textarea
-              value={logInput}
-              onChange={(e) => setLogInput(e.target.value)}
-              className="flex-1 w-full p-4 font-mono text-sm border dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none text-slate-600 dark:text-slate-300 transition-colors duration-200"
-              placeholder="Paste your terraform plan output here..."
-            />
+          <div className="flex flex-col h-[calc(100vh-10rem)]">
+             {/* How to use section */}
+             <div className="bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-500 p-4 mb-6 rounded-r-lg shadow-sm transition-colors duration-200">
+                <h3 className="text-blue-800 dark:text-blue-300 font-bold mb-2 flex items-center gap-2 text-sm uppercase tracking-wide">
+                    <Info size={18} /> How to use
+                </h3>
+                <p className="text-blue-700 dark:text-blue-200 text-sm leading-relaxed">
+                    To use this tool, simply go to your Terraform plan output, click on <strong>"View raw log"</strong>,
+                    copy the logs related to the NSG, and paste them into the input area below.
+                </p>
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border dark:border-slate-800 p-6 flex-1 flex flex-col transition-colors duration-200">
+              <h2 className="text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200">Paste Terraform Output</h2>
+              <textarea
+                value={logInput}
+                onChange={(e) => setLogInput(e.target.value)}
+                className="flex-1 w-full p-4 font-mono text-sm border dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none text-slate-600 dark:text-slate-300 transition-colors duration-200"
+                placeholder="Paste your terraform plan output here..."
+              />
+              <div className="mt-4 flex justify-end">
+                <button 
+                  onClick={() => setActiveTab('dashboard')}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-2 shadow-sm"
+                >
+                  Analyze & View Results <ArrowRight size={18} />
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
           <div className="space-y-6">
@@ -207,16 +232,25 @@ function App() {
 
             {/* Controls */}
             <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border dark:border-slate-800 transition-colors duration-200">
-              <div className="relative w-full md:w-96">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-                <input 
-                  type="text" 
-                  placeholder="Search rules..." 
-                  className="w-full pl-10 pr-4 py-2 border dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-gray-400"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
+              <div className="flex items-center gap-4 w-full md:w-auto">
+                <button 
+                  onClick={() => setActiveTab('input')}
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-slate-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2"
+                >
+                  <ArrowLeft size={16} /> Back to Input
+                </button>
+                <div className="relative flex-1 md:w-80">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+                  <input 
+                    type="text" 
+                    placeholder="Search rules..." 
+                    className="w-full pl-10 pr-4 py-2 border dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-gray-400"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
               </div>
+              
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-500 dark:text-gray-400 font-medium mr-2">Filter:</span>
                 {(['ALL', DiffType.ADDED, DiffType.REMOVED, DiffType.MODIFIED] as const).map(type => (
