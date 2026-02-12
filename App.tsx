@@ -137,7 +137,7 @@ function App() {
                 </div>
               </div>
               <div className="bg-white p-5 rounded-xl shadow-sm border flex items-center justify-between cursor-pointer hover:border-green-300 transition"
-                   onClick={() => setFilterType('ADDED')}>
+                   onClick={() => setFilterType(DiffType.ADDED)}>
                 <div>
                   <p className="text-sm font-medium text-gray-500">Added</p>
                   <p className="text-2xl font-bold text-green-600">+{stats.added}</p>
@@ -147,7 +147,7 @@ function App() {
                 </div>
               </div>
               <div className="bg-white p-5 rounded-xl shadow-sm border flex items-center justify-between cursor-pointer hover:border-red-300 transition"
-                   onClick={() => setFilterType('REMOVED')}>
+                   onClick={() => setFilterType(DiffType.REMOVED)}>
                 <div>
                   <p className="text-sm font-medium text-gray-500">Removed</p>
                   <p className="text-2xl font-bold text-red-600">-{stats.removed}</p>
@@ -157,7 +157,7 @@ function App() {
                 </div>
               </div>
               <div className="bg-white p-5 rounded-xl shadow-sm border flex items-center justify-between cursor-pointer hover:border-yellow-300 transition"
-                   onClick={() => setFilterType('MODIFIED')}>
+                   onClick={() => setFilterType(DiffType.MODIFIED)}>
                 <div>
                   <p className="text-sm font-medium text-gray-500">Modified</p>
                   <p className="text-2xl font-bold text-yellow-600">~{stats.modified}</p>
