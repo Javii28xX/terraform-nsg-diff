@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { SAMPLE_LOG } from './constants';
 import { parseTerraformLog } from './services/parser';
 import { calculateDiff } from './services/diffEngine';
 import { DiffResult, DiffType } from './types';
@@ -21,7 +20,7 @@ import {
 } from 'lucide-react';
 
 function App() {
-  const [logInput, setLogInput] = useState(SAMPLE_LOG);
+  const [logInput, setLogInput] = useState('');
   // Default to 'input' tab as requested
   const [activeTab, setActiveTab] = useState<'dashboard' | 'input'>('input');
   const [searchTerm, setSearchTerm] = useState('');
