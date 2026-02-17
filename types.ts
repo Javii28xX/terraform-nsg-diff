@@ -1,3 +1,4 @@
+
 export interface NSGRule {
   id?: string;
   name: string;
@@ -61,4 +62,5 @@ export interface ParseResult {
   nsgRemoved: NSGRule[];
   firewallChanges: FirewallRuleChange[];
   ipGroupChanges: IPGroupChange[];
+  asgsCreated: string[];
 }

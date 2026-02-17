@@ -65,6 +65,7 @@ export const parseTerraformLog = (log: string): ParseResult => {
   const nsgRemoved: NSGRule[] = [];
   const firewallChanges: FirewallRuleChange[] = [];
   const ipGroupChanges: IPGroupChange[] = [];
+  const asgsCreated: string[] = [];
 
   // --- NSG Legacy Parser State ---
   let currentNsgRule: Partial<NSGRule> | null = null;
@@ -75,7 +76,7 @@ export const parseTerraformLog = (log: string): ParseResult => {
   // --- New Stack-Based Parser State ---
   // We use a stack to track context: Resource -> Collection -> Rule
   interface BlockContext {
-    type: 'resource' | 'collection' | 'rule' | 'ipgroup';
+    type: 'resource' | 'collection' | 'rule' | 'ipgroup' | 'asg';
     name?: string; // For collection/rule names
     changeType?: DiffType; // For the block itself
     data: any; // Accumulate attributes here
@@ -83,7 +84,7 @@ export const parseTerraformLog = (log: string): ParseResult => {
   const stack: BlockContext[] = [];
 
   // Identify what kind of resource we are currently inside
-  let activeResourceType: 'nsg' | 'firewall' | 'ipgroup' | null = null;
+  let activeResourceType: 'nsg' | 'firewall' | 'ipgroup' | 'asg' | null = null;
   let currentFirewallGroupName = '';
 
   for (const rawLine of lines) {
@@ -105,18 +106,26 @@ export const parseTerraformLog = (log: string): ParseResult => {
     }
     if (rawClean.includes('resource "azurerm_ip_group"')) {
       activeResourceType = 'ipgroup';
-      // Start a context immediately for IP Group
       let changeType = DiffType.UNCHANGED;
       if (rawClean.includes('will be created')) changeType = DiffType.ADDED;
       if (rawClean.includes('will be destroyed')) changeType = DiffType.REMOVED;
       if (rawClean.includes('will be updated')) changeType = DiffType.MODIFIED;
-      // Also fallback to prefix check if line analysis is fuzzy
       if (prefix === '+') changeType = DiffType.ADDED;
       if (prefix === '-') changeType = DiffType.REMOVED;
       if (prefix === '~') changeType = DiffType.MODIFIED;
 
       stack.push({ type: 'ipgroup', changeType, data: { cidrs: { added: [], removed: [], current: [] } } });
       continue;
+    }
+
+    if (rawClean.includes('resource "azurerm_application_security_group"')) {
+        activeResourceType = 'asg';
+        let changeType = DiffType.UNCHANGED;
+        if (rawClean.includes('will be created') || prefix === '+') changeType = DiffType.ADDED;
+        
+        // Push to stack to capture attributes (specifically 'name')
+        stack.push({ type: 'asg', changeType, data: {} });
+        continue;
     }
     
     // ---------------------------------------------------------
@@ -137,7 +146,7 @@ export const parseTerraformLog = (log: string): ParseResult => {
         } else if (clean.startsWith('rule')) {
           blockType = 'rule';
         } else if (clean.startsWith('resource')) {
-          blockType = 'resource'; // Should catch the root, though usually handled by loop start
+          blockType = 'resource';
         }
 
         if (blockType) {
@@ -155,14 +164,11 @@ export const parseTerraformLog = (log: string): ParseResult => {
           if (parentCollection) {
             // Determine effective change type
             let effectiveType = finishedBlock.changeType;
-            // If the rule has no explicit prefix, but contained modifications, it's modified
             if (effectiveType === DiffType.UNCHANGED && Object.keys(finishedBlock.data).length > 0) {
-               // Heuristic: check if we captured diffs
                const hasDiffs = Object.values(finishedBlock.data).some((v: any) => v.old !== undefined);
                if (hasDiffs) effectiveType = DiffType.MODIFIED;
             }
 
-            // If effective type is still UNCHANGED, ignore (unless we want to see unchanged rules context)
             if (effectiveType !== DiffType.UNCHANGED) {
               const collectionPriority = parentCollection.data.priority?.new ?? parentCollection.data.priority?.value;
 
@@ -186,7 +192,6 @@ export const parseTerraformLog = (log: string): ParseResult => {
       // Attributes inside blocks
       const currentBlock = stack[stack.length - 1];
       if (currentBlock) {
-        // Handle name specifically for Collection naming
         if (currentBlock.type === 'collection') {
            if (clean.startsWith('name')) {
              const attr = parseAttribute(clean);
@@ -195,7 +200,6 @@ export const parseTerraformLog = (log: string): ParseResult => {
            if (clean.startsWith('priority')) {
              const attr = parseAttribute(clean);
              if (attr) {
-                // Store priority in data.priority.new or data.priority.value
                 currentBlock.data.priority = {
                     value: attr.value,
                     old: attr.oldVal,
@@ -205,9 +209,7 @@ export const parseTerraformLog = (log: string): ParseResult => {
            }
         }
 
-        // Handle rule attributes
         if (currentBlock.type === 'rule') {
-          // List Handling (e.g. destination_ports = [ ... ])
           if (clean.endsWith(' = [')) {
             currentBlock.data._currentListKey = clean.split(' = ')[0].trim();
             currentBlock.data[currentBlock.data._currentListKey] = { old: [], new: [], value: [] };
@@ -218,12 +220,9 @@ export const parseTerraformLog = (log: string): ParseResult => {
             continue;
           }
 
-          // Inside a list
           if (currentBlock.data._currentListKey) {
             let val = clean;
             if (val.endsWith(',')) val = val.slice(0, -1);
-            // Check for list item diff: "old" -> "new" inside list is rare in TF, usually it removes one and adds another
-            // But the provided log shows: "10.249.18.28" -> "10.249.6.228" inside a list with ~
             const listRef = currentBlock.data[currentBlock.data._currentListKey];
             
             if (clean.includes(' -> ')) {
@@ -234,24 +233,21 @@ export const parseTerraformLog = (log: string): ParseResult => {
                const parsed = parseValue(val);
                if (prefix === '-') listRef.old.push(parsed);
                else if (prefix === '+') listRef.new.push(parsed);
-               else listRef.value.push(parsed); // Unchanged or just current context
+               else listRef.value.push(parsed);
             }
             continue;
           }
 
-          // Simple Attributes
           const attr = parseAttribute(clean);
           if (attr) {
             if (attr.isModification) {
               currentBlock.data[attr.key] = { old: attr.oldVal, new: attr.newVal };
             } else {
-              // If the block is ADDED, everything is 'new'
               if (currentBlock.changeType === DiffType.ADDED) {
                 currentBlock.data[attr.key] = { new: attr.value };
               } else if (currentBlock.changeType === DiffType.REMOVED) {
                 currentBlock.data[attr.key] = { old: attr.value };
               } else {
-                 // Context attribute (like name in a modified block)
                  currentBlock.data[attr.key] = { value: attr.value };
               }
             }
@@ -268,7 +264,6 @@ export const parseTerraformLog = (log: string): ParseResult => {
       if (!currentBlock) continue;
 
       if (clean === '}' || clean === '},') {
-        // Identify Name
         const name = currentBlock.data.name || 'Unknown IP Group';
         ipGroupChanges.push({
           id: Math.random().toString(36),
@@ -277,17 +272,15 @@ export const parseTerraformLog = (log: string): ParseResult => {
           cidrs: currentBlock.data.cidrs
         });
         stack.pop();
-        activeResourceType = null; // Reset
+        activeResourceType = null;
         continue;
       }
 
-      // Capture Name
       if (clean.startsWith('name')) {
         const attr = parseAttribute(clean);
-        if (attr) currentBlock.data.name = attr.value || attr.oldVal; // Use old val if removed
+        if (attr) currentBlock.data.name = attr.value || attr.oldVal;
       }
 
-      // Capture CIDRs list
       if (clean.includes('cidrs = [')) {
         currentBlock.data._inCidrs = true;
         continue;
@@ -309,9 +302,35 @@ export const parseTerraformLog = (log: string): ParseResult => {
     }
 
     // ---------------------------------------------------------
-    // 4. NSG Legacy Logic (Fallthrough for array format)
+    // 4. ASG Logic
     // ---------------------------------------------------------
-    // If we are NOT in a recognized resource block, try NSG array parsing
+    if (activeResourceType === 'asg') {
+        const currentBlock = stack[stack.length - 1];
+        if (!currentBlock) continue;
+
+        if (clean === '}' || clean === '},') {
+            // Check if we captured a name and it was added
+            if (currentBlock.changeType === DiffType.ADDED) {
+                const name = currentBlock.data.name;
+                if (name && typeof name === 'string' && !name.includes('known after apply')) {
+                    asgsCreated.push(name);
+                }
+            }
+            stack.pop();
+            activeResourceType = null;
+            continue;
+        }
+
+        if (clean.startsWith('name')) {
+            const attr = parseAttribute(clean);
+            // prefer new value, then value
+            if (attr) currentBlock.data.name = attr.newVal || attr.value;
+        }
+    }
+
+    // ---------------------------------------------------------
+    // 5. NSG Legacy Logic (Fallthrough for array format)
+    // ---------------------------------------------------------
     if (!activeResourceType) {
       if (clean === '{') {
         currentNsgRule = {};
@@ -332,7 +351,6 @@ export const parseTerraformLog = (log: string): ParseResult => {
       }
 
       if (currentNsgRule) {
-        // (Copy parsing logic from original file for NSG internals)
         if (clean.endsWith(' = [')) {
           nsgListKey = clean.split(' = ')[0].trim();
           nsgList = [];
@@ -366,5 +384,5 @@ export const parseTerraformLog = (log: string): ParseResult => {
     }
   }
 
-  return { nsgAdded, nsgRemoved, firewallChanges, ipGroupChanges };
+  return { nsgAdded, nsgRemoved, firewallChanges, ipGroupChanges, asgsCreated };
 };

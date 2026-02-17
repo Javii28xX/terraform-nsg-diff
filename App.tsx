@@ -56,12 +56,13 @@ function App() {
   }, [isDarkMode]);
 
   // Parsing
-  const { nsgDiffs, fwDiffs, ipDiffs } = useMemo(() => {
-    const { nsgAdded, nsgRemoved, firewallChanges, ipGroupChanges } = parseTerraformLog(logInput);
+  const { nsgDiffs, fwDiffs, ipDiffs, createdAsgs } = useMemo(() => {
+    const { nsgAdded, nsgRemoved, firewallChanges, ipGroupChanges, asgsCreated } = parseTerraformLog(logInput);
     return {
       nsgDiffs: calculateDiff(nsgAdded, nsgRemoved),
       fwDiffs: firewallChanges,
-      ipDiffs: ipGroupChanges
+      ipDiffs: ipGroupChanges,
+      createdAsgs: asgsCreated
     };
   }, [logInput]);
 
@@ -136,6 +137,29 @@ function App() {
     if (!items || items.length === 0) return '*';
     if (items.length > 2) return `${items.slice(0, 2).join(', ')} +${items.length - 2}`;
     return items.join(', ');
+  };
+
+  const formatNsgAddress = (prefix?: string, prefixes?: string[], asgs?: any) => {
+    // Helper to check for "known after apply"
+    const isNewAsg = (val: any) => {
+       if (!val) return false;
+       if (typeof val === 'string' && val.toLowerCase().includes('known after apply')) return true;
+       if (Array.isArray(val) && val.some(v => String(v).toLowerCase().includes('known after apply'))) return true;
+       return false;
+    };
+
+    if (isNewAsg(asgs)) {
+       // If exactly one ASG is being created in the plan, infer that this rule refers to it.
+       if (createdAsgs.length === 1) {
+          return `New: ${createdAsgs[0]}`;
+       }
+       return 'New (known after apply)'; 
+    }
+    
+    if (Array.isArray(asgs) && asgs.length > 0) return `ASG [${asgs.length}]`;
+    
+    if (prefixes && prefixes.length > 0) return formatList(prefixes);
+    return prefix || '*';
   };
 
   // Helper to render diff value in table cell
@@ -370,6 +394,8 @@ function App() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Status</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Priority</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Source</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Destination</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Access</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Direction</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Dest Port</th>
@@ -377,7 +403,7 @@ function App() {
                     </thead>
                     <tbody className="divide-y divide-gray-200 dark:divide-slate-800 bg-white dark:bg-slate-900">
                       {(filteredResults as DiffResult[]).length === 0 ? (
-                        <tr><td colSpan={6} className="px-6 py-10 text-center text-gray-500">No NSG changes found.</td></tr>
+                        <tr><td colSpan={8} className="px-6 py-10 text-center text-gray-500">No NSG changes found.</td></tr>
                       ) : (
                         (filteredResults as DiffResult[]).map((result, idx) => (
                           <tr key={`${result.rule.name}-${idx}`} 
@@ -396,6 +422,12 @@ function App() {
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
                                 {result.rule.name}
                                 {result.type === DiffType.MODIFIED && <span className="ml-2 text-xs text-blue-600 hover:underline">Compare →</span>}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">
+                              {formatNsgAddress(result.rule.source_address_prefix, result.rule.source_address_prefixes, result.rule.source_application_security_group_ids)}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono">
+                              {formatNsgAddress(result.rule.destination_address_prefix, result.rule.destination_address_prefixes, result.rule.destination_application_security_group_ids)}
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{result.rule.access}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{result.rule.direction}</td>
